@@ -1,0 +1,12 @@
+# Rust build output
+target/
+
+# Local-only lecture/reference code
+**/references/
+
+# Backups of old nested homework repos
+**/.git.local-backup/
+
+# Editor/system files
+.DS_Store
+.vscode/
