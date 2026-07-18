@@ -21,6 +21,7 @@ use std::marker::PhantomData;
 
 const NUM_BITS: usize = 32;
 
+#[cfg(test)]
 fn decompose_to_bits<F: PrimeField>(value: u64) -> [Value<F>; NUM_BITS] {
     let mut bits = [Value::known(F::ZERO); NUM_BITS];
 
@@ -31,6 +32,7 @@ fn decompose_to_bits<F: PrimeField>(value: u64) -> [Value<F>; NUM_BITS] {
     bits
 }
 
+#[cfg(test)]
 fn compute_xor(x: u64, y: u64) -> u64 {
     (x as u32 ^ y as u32) as u64
 }
@@ -125,6 +127,41 @@ impl<F: PrimeField> XorChip<F> {
             constraints
         });
 
+        // Reconstruct each integer from its little-endian bits. Together with
+        // the boolean constraints, this also range-checks x, y, and out.
+        meta.create_gate("32-bit reconstruction gate", |meta| {
+            let q = meta.query_selector(q);
+            let x = meta.query_advice(x, Rotation::cur());
+            let y = meta.query_advice(y, Rotation::cur());
+            let out = meta.query_advice(out, Rotation::cur());
+            let x_bits = x_bits.map(|col| meta.query_advice(col, Rotation::cur()));
+            let y_bits = y_bits.map(|col| meta.query_advice(col, Rotation::cur()));
+            let out_bits = out_bits.map(|col| meta.query_advice(col, Rotation::cur()));
+
+            let mut x_reconstructed = Expression::Constant(F::ZERO);
+            let mut y_reconstructed = Expression::Constant(F::ZERO);
+            let mut out_reconstructed = Expression::Constant(F::ZERO);
+            let mut coefficient = F::ONE;
+
+            for i in 0..NUM_BITS {
+                let coefficient_expr = Expression::Constant(coefficient);
+                x_reconstructed = x_reconstructed + coefficient_expr.clone() * x_bits[i].clone();
+                y_reconstructed = y_reconstructed + coefficient_expr.clone() * y_bits[i].clone();
+                out_reconstructed = out_reconstructed + coefficient_expr * out_bits[i].clone();
+                coefficient = coefficient.double();
+            }
+
+            vec![
+                q.clone() * (x - x_reconstructed),
+                q.clone() * (y - y_reconstructed),
+                q * (out - out_reconstructed),
+            ]
+        });
+
+        meta.enable_equality(x);
+        meta.enable_equality(y);
+        meta.enable_equality(out);
+
         XorConfig {
             x,
             y,
@@ -141,11 +178,18 @@ impl<F: PrimeField> XorChip<F> {
         layouter: &mut impl Layouter<F>,
         x: Value<F>,
         y: Value<F>,
-    ) -> Result<AssignedCell<F, F>, ErrorFront> {
-        let cell = layouter.assign_region(
-            || "x",
-            |mut region| region.assign_advice(|| "x", self.config.x, 0, x),
-        )?;
+    ) -> Result<(AssignedCell<F, F>, AssignedCell<F, F>), ErrorFront> {
+        let config = &self.config;
+
+        layouter.assign_region(
+            || "unconstrained inputs",
+            |mut region| {
+                let x_cell = region.assign_advice(|| "x", config.x, 0, || x)?;
+                let y_cell = region.assign_advice(|| "y", config.y, 0, || y)?;
+
+                Ok((x_cell, y_cell))
+            },
+        )
     }
 
     pub fn xor(
@@ -153,11 +197,43 @@ impl<F: PrimeField> XorChip<F> {
         layouter: &mut impl Layouter<F>,
         x: AssignedCell<F, F>,
         y: AssignedCell<F, F>,
+        x_bits: [Value<F>; NUM_BITS],
+        y_bits: [Value<F>; NUM_BITS],
     ) -> Result<AssignedCell<F, F>, ErrorFront> {
-        let cell = layouter.assign_region(
+        let config = &self.config;
+
+        layouter.assign_region(
             || "xor",
-            |mut region| region.assign_advice(|| "xor", self.config.x, 0, x),
-        )?;
+            |mut region| {
+                config.q.enable(&mut region, 0)?;
+
+                let x_copy = region.assign_advice(|| "x", config.x, 0, || x.value().copied())?;
+                let y_copy = region.assign_advice(|| "y", config.y, 0, || y.value().copied())?;
+                region.constrain_equal(x_copy.cell(), x.cell())?;
+                region.constrain_equal(y_copy.cell(), y.cell())?;
+
+                let two = F::from(2);
+                let out_bits: [Value<F>; NUM_BITS] = std::array::from_fn(|i| {
+                    x_bits[i]
+                        .zip(y_bits[i])
+                        .map(|(x_bit, y_bit)| x_bit + y_bit - two * x_bit * y_bit)
+                });
+
+                let mut out_value = Value::known(F::ZERO);
+                let mut coefficient = F::ONE;
+
+                for i in 0..NUM_BITS {
+                    region.assign_advice(|| "x bit", config.x_bits[i], 0, || x_bits[i])?;
+                    region.assign_advice(|| "y bit", config.y_bits[i], 0, || y_bits[i])?;
+                    region.assign_advice(|| "out bit", config.out_bits[i], 0, || out_bits[i])?;
+
+                    out_value = out_value + out_bits[i].map(|bit| coefficient * bit);
+                    coefficient = coefficient.double();
+                }
+
+                region.assign_advice(|| "out", config.out, 0, || out_value)
+            },
+        )
     }
 }
 
@@ -177,13 +253,88 @@ impl<F: PrimeField> Circuit<F> for MyCircuit<F> {
         MyCircuit {
             x: Value::unknown(),
             y: Value::unknown(),
+            x_bits: [Value::unknown(); NUM_BITS],
+            y_bits: [Value::unknown(); NUM_BITS],
         }
     }
 
     fn configure(meta: &mut ConstraintSystem<F>) -> Self::Config {
-        let x = meta.advice_column();
-        let y = meta.advice_column();
+        let instance = meta.instance_column();
+        meta.enable_equality(instance);
+
+        let config = XorChip::configure(meta);
+        CircuitConfig { instance, config }
     }
 
-    fn synthesize() {}
+    fn synthesize(
+        &self,
+        config: Self::Config,
+        mut layouter: impl Layouter<F>,
+    ) -> Result<(), ErrorFront> {
+        let chip = XorChip::construct(config.config);
+        let (x, y) = chip.unconstrained(&mut layouter, self.x, self.y)?;
+        let out = chip.xor(&mut layouter, x, y, self.x_bits, self.y_bits)?;
+
+        layouter.constrain_instance(out.cell(), config.instance, 0)?;
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use halo2_proofs::{dev::MockProver, halo2curves::bn256::Fr};
+
+    fn circuit(x: u64, y: u64) -> MyCircuit<Fr> {
+        MyCircuit {
+            x: Value::known(Fr::from(x)),
+            y: Value::known(Fr::from(y)),
+            x_bits: decompose_to_bits(x),
+            y_bits: decompose_to_bits(y),
+        }
+    }
+
+    fn assert_valid_xor(x: u64, y: u64) {
+        let prover =
+            MockProver::run(4, &circuit(x, y), vec![vec![Fr::from(compute_xor(x, y))]]).unwrap();
+
+        prover.assert_satisfied();
+    }
+
+    #[test]
+    fn computes_bitwise_xor() {
+        assert_valid_xor(0b1010, 0b1100);
+        assert_valid_xor(0, 0);
+        assert_valid_xor(u32::MAX as u64, 0);
+        assert_valid_xor(u32::MAX as u64, u32::MAX as u64);
+    }
+
+    #[test]
+    fn rejects_wrong_public_output() {
+        let prover = MockProver::run(4, &circuit(10, 12), vec![vec![Fr::from(7)]]).unwrap();
+
+        assert!(prover.verify().is_err());
+    }
+
+    #[test]
+    fn rejects_inputs_larger_than_32_bits() {
+        let too_large = 1_u64 << NUM_BITS;
+
+        let x_prover = MockProver::run(
+            4,
+            &circuit(too_large, 1),
+            vec![vec![Fr::from(compute_xor(too_large, 1))]],
+        )
+        .unwrap();
+        assert!(x_prover.verify().is_err());
+
+        let y_prover = MockProver::run(
+            4,
+            &circuit(1, too_large),
+            vec![vec![Fr::from(compute_xor(1, too_large))]],
+        )
+        .unwrap();
+        assert!(y_prover.verify().is_err());
+    }
 }
