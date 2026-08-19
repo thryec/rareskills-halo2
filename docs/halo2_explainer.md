@@ -197,6 +197,48 @@ Value<F> -> AssignedCell<F, F>
 
 The loaded cell can then be copied into later add/mul rows.
 
+## Lookup tables
+
+A lookup proves that an advice value or tuple appears in a precomputed table. The prover supplies the values; the lookup checks membership in the allowed set or relation.
+
+Lookups have their own constraint primitive because set membership is expensive to express with low-degree gates. For example, proving `x` is in `0..=15` directly would require the degree-16 expression `x(x - 1)...(x - 15) = 0`, or many smaller constraints. `meta.lookup` instead tells the backend to use a lookup argument that checks membership without revealing the advice value.
+
+In short: a gate proves that values satisfy an equation; a lookup proves that values form an allowed tuple. This makes lookups useful for range checks, bitwise operations, addition with carry, and state transitions.
+
+Declare static table columns and the lookup in `configure`:
+
+```rust
+let x_table = meta.lookup_table_column();
+let y_table = meta.lookup_table_column();
+let z_table = meta.lookup_table_column();
+let q = meta.complex_selector();
+
+meta.lookup("relation", |meta| {
+    let x = meta.query_advice(x, Rotation::cur());
+    let y = meta.query_advice(y, Rotation::cur());
+    let z = meta.query_advice(z, Rotation::cur());
+    let q = meta.query_selector(q);
+
+    vec![
+        (q.clone() * x, x_table),
+        (q.clone() * y, y_table),
+        (q * z, z_table),
+    ]
+});
+```
+
+The vector is one tuple lookup: `(x, y, z)` must match the same table row. It is not three independent checks. When `q = 0`, the input becomes the zero tuple, so static tables normally include a zero row.
+
+Fill static tables in `synthesize` with `layouter.assign_table(...)` and `table.assign_cell(...)`. Examples:
+
+- A one-column table containing `0..=15` proves a 4-bit range check.
+- A table containing `(x, y, (x + y) mod 16)` proves modular addition.
+- A table containing `(x, y, x XOR y)` proves XOR.
+
+Use `meta.lookup` with `TableColumn` for static tables. `lookup_any` can use advice expressions on the table side, making table contents prover-supplied; those contents need their own constraints.
+
+Table size matters. An `n`-bit range table needs `2^n` rows, while a full two-input operation table needs `2^(2n)` rows. An 8-bit XOR table needs 65,536 rows; a 16-bit table needs about 4.3 billion. For larger values, split inputs into smaller chunks and perform several lookups.
+
 ## Fibonacci chain
 
 Gate: `q * (a + b - c) = 0`.
