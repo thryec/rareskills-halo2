@@ -61,7 +61,7 @@ impl<F: PrimeField> Circuit<F> for MyCircuit<F> {
             || "add region",
             |mut region| {
                 config.q.enable(&mut region, 0)?; // turning on the selector for the first row
-                                                  // or could also use: config.q.enable(&mut region, 0);
+                // or could also use: config.q.enable(&mut region, 0);
 
                 // fill in the advice columns/witness values here
                 region.assign_advice(|| "assign a", config.a, 0, || self.x)?;
@@ -77,3 +77,31 @@ impl<F: PrimeField> Circuit<F> for MyCircuit<F> {
 
 // regions: a way that halo2 handles the rows of the table (not the same as chips)
 //
+
+#[cfg(test)]
+mod tests {
+    use super::MyCircuit;
+    use halo2_proofs::{circuit::Value, dev::MockProver, halo2curves::bn256::Fr};
+
+    #[test]
+    fn accepts_values_that_sum_to_ten() {
+        let circuit = MyCircuit {
+            x: Value::known(Fr::from(4)),
+            y: Value::known(Fr::from(6)),
+        };
+
+        let prover = MockProver::run(4, &circuit, vec![]).unwrap();
+        prover.assert_satisfied();
+    }
+
+    #[test]
+    fn rejects_values_that_do_not_sum_to_ten() {
+        let circuit = MyCircuit {
+            x: Value::known(Fr::from(4)),
+            y: Value::known(Fr::from(5)),
+        };
+
+        let prover = MockProver::run(4, &circuit, vec![]).unwrap();
+        assert!(prover.verify().is_err());
+    }
+}
