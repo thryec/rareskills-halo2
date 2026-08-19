@@ -156,7 +156,7 @@ mod tests {
             carry: Value::known(Fr::from(0)),
         };
 
-        let prover = MockProver::run(18, &circuit, vec![]).unwrap();
+        let prover = MockProver::run(17, &circuit, vec![]).unwrap();
         prover.assert_satisfied();
     }
 
@@ -169,7 +169,7 @@ mod tests {
             carry: Value::known(Fr::from(1)),
         };
 
-        let prover = MockProver::run(18, &circuit, vec![]).unwrap();
+        let prover = MockProver::run(17, &circuit, vec![]).unwrap();
         assert!(prover.verify().is_err());
     }
 
@@ -185,7 +185,7 @@ mod tests {
             carry: Value::known(Fr::from(1)),
         };
 
-        let prover = MockProver::run(18, &circuit, vec![]).unwrap();
+        let prover = MockProver::run(17, &circuit, vec![]).unwrap();
         prover.assert_satisfied();
     }
 }
