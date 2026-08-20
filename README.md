@@ -1,10 +1,10 @@
 # RareSkills Halo2
 
-Notes, exercises, and reference code from the RareSkills Halo2 course. The Rust crates use the PSE `halo2` `v0.4.0` tag and Rust 2024 edition.
+Homework solutions for Cohort 0 of the RareSkills Halo2 course.
 
 ## Circuits and chips
 
-Each circuit defines its columns, selectors, gates, and lookups in `configure`, then assigns witnesses and tables in `synthesize`. Chips group reusable constraints and assignment methods. `MockProver` tests check valid and invalid witnesses.
+The homework covers the following circuits and chips:
 
 - [x] 01. Addition Gate
 - [x] 02. Fibonacci, One Advice Column
@@ -17,8 +17,10 @@ Each circuit defines its columns, selectors, gates, and lookups in `configure`, 
 - [x] 09. XOR-8 Static Lookup
 - [x] 10. 16-bit Addition with Carry
 - [ ] 11. 32-bit Chunked Addition
-- [ ] 12. Fixed Finite Automaton
+- [x] 12. Fixed Finite Automaton
 - [ ] 13. Generic Finite Automaton
+- [ ] 14. Poseidon Hash Circuit
+- [ ] 15. zkVM
 
 ## Setup
 
